@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kawauchi">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>KawauchiCam</title>
+<style>
+  :root { --fg: #fff; --dim: rgba(255,255,255,.65); --accent: #f4b8c8; }
+  * { box-sizing: border-box; margin: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; background: #000; color: var(--fg); font: 15px -apple-system, system-ui, sans-serif; overflow: hidden; }
+  body { display: flex; flex-direction: column; padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  #stage { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; position: relative; }
+  canvas { max-width: 100%; max-height: 100%; display: block; }
+  #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity .25s; }
+  #msg { position: absolute; bottom: 12px; left: 0; right: 0; text-align: center; color: var(--dim); font-size: 13px; padding: 0 16px; }
+  #controls { padding: 12px 24px 16px; display: grid; gap: 14px; }
+  .row { display: flex; align-items: center; gap: 12px; color: var(--dim); font-size: 13px; }
+  input[type=range] { flex: 1; accent-color: #fff; }
+  .toggle { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
+  #bar { display: flex; align-items: center; justify-content: space-between; padding: 0 20px; }
+  #shutter { width: 78px; height: 78px; border-radius: 50%; border: 4px solid #fff; background: rgba(255,255,255,.9); background-clip: content-box; padding: 6px; }
+  #shutter:active { transform: scale(.94); }
+  .icon { width: 56px; height: 56px; border: 0; background: none; color: #fff; font-size: 26px; }
+  #result { position: fixed; inset: 0; background: #000; display: none; flex-direction: column; padding: env(safe-area-inset-top) 16px calc(env(safe-area-inset-bottom) + 16px); z-index: 10; }
+  #result.show { display: flex; }
+  #result img { flex: 1; min-height: 0; object-fit: contain; width: 100%; -webkit-touch-callout: default; }
+  #result p { color: var(--dim); font-size: 13px; text-align: center; margin: 10px 0; }
+  #result .btns { display: flex; gap: 12px; }
+  #result button { flex: 1; height: 50px; border-radius: 12px; border: 0; font-size: 16px; font-weight: 600; }
+  #save { background: #fff; color: #000; }
+  #back { background: #222; color: #fff; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="view"></canvas>
+  <div id="flash"></div>
+  <div id="msg">Tocca per avviare la fotocamera</div>
+</div>
+<div id="controls">
+  <div class="row">Effetto <input id="strength" type="range" min="0" max="1" step="0.01" value="1">
+    <label class="toggle">6x6 <input id="square" type="checkbox" checked></label></div>
+  <div id="bar">
+    <span class="icon"></span>
+    <button id="shutter" aria-label="Scatta"></button>
+    <button id="flip" class="icon" aria-label="Cambia fotocamera">⟲</button>
+  </div>
+</div>
+<div id="result">
+  <img id="shot" alt="Foto scattata">
+  <p>Tocca "Salva", poi "Salva immagine". Oppure tieni premuto sulla foto.</p>
+  <div class="btns"><button id="back">Indietro</button><button id="save">Salva</button></div>
+</div>
+
+<script>
+// ===== Parametri del look: cambiali qui =====
+const LOOK = {
+  exposureEV: 0.45,      // sovraesposizione
+  curve: [0.12, 0.36, 0.60, 0.82, 0.96], // uscita della curva a 0, .25, .5, .75, 1 (neri sollevati, bianchi morbidi)
+  saturation: 0.78,      // 1 = originale
+  contrast: 0.92,        // 1 = originale
+  shadowCyan: 0.035,     // ombre verso il ciano
+  highlightPink: 0.030,  // alte luci verso il rosa
+  bloom: 1.2,            // bagliore attorno alle luci
+  grain: 0.07,           // grana (0 = niente)
+};
+
+const $ = id => document.getElementById(id);
+const video = document.createElement('video');
+video.playsInline = true; video.muted = true; video.setAttribute('playsinline', '');
+const canvas = $('view');
+const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true, premultipliedAlpha: false });
+let facing = 'environment', stream = null, lastBlob = null;
+
+// ===== Shader =====
+const VS = `attribute vec2 p; varying vec2 v_uv;
+void main(){ v_uv = p*0.5+0.5; gl_Position = vec4(p,0.,1.); }`;
+const FS = `precision highp float;
+varying vec2 v_uv;
+uniform sampler2D u_tex;
+uniform vec2 u_off, u_scale;
+uniform float u_s, u_seed, u_mirror, u_ev, u_sat, u_con, u_cy, u_pk, u_bloom, u_grain;
+uniform float u_c0, u_c1, u_c2, u_c3, u_c4;
+vec3 tex(vec2 uv){ return texture2D(u_tex, u_off + clamp(uv,0.,1.)*u_scale).rgb; }
+float curve(float x){
+  if (x < .25) return mix(u_c0, u_c1, x/.25);
+  if (x < .50) return mix(u_c1, u_c2, (x-.25)/.25);
+  if (x < .75) return mix(u_c2, u_c3, (x-.5)/.25);
+  return mix(u_c3, u_c4, (x-.75)/.25);
+}
+float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453); }
+void main(){
+  float s = u_s;
+  vec2 uv = v_uv; if (u_mirror > .5) uv.x = 1. - uv.x;
+  vec3 c = clamp(tex(uv) * exp2(u_ev*s), 0., 1.);
+  c = mix(c, vec3(curve(c.r), curve(c.g), curve(c.b)), s);
+  float l = dot(c, vec3(.2126,.7152,.0722));
+  c = mix(vec3(l), c, 1. - (1.-u_sat)*s);
+  c = (c - .5) * (1. - (1.-u_con)*s) + .5;
+  vec3 cy = c*vec3(1.-u_cy*s, 1., 1.) + vec3(0., u_cy*.5*s, u_cy*s);
+  vec3 pk = c*vec3(1., 1.-u_pk*.7*s, 1.) + vec3(u_pk*s, 0., u_pk*.5*s);
+  c = mix(cy, pk, clamp(l, 0., 1.));
+  vec3 b = vec3(0.);
+  for (int i = 0; i < 12; i++) {
+    float a = float(i) * .5235988;
+    vec2 d = vec2(cos(a), sin(a));
+    b += max(tex(uv + d*.009) - .6, 0.);
+    b += max(tex(uv + d*.018) - .6, 0.);
+  }
+  c += b / 24. * u_bloom * s;
+  c += (hash(gl_FragCoord.xy + u_seed) - .5) * u_grain * s;
+  gl_FragColor = vec4(clamp(c, 0., 1.), 1.);
+}`;
+function shader(type, src) {
+  const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+  return sh;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog); gl.useProgram(prog);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const loc = gl.getAttribLocation(prog, 'p');
+gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+const U = n => gl.getUniformLocation(prog, n);
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+for (const [k, v] of [[gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE],
+                      [gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR]])
+  gl.texParameteri(gl.TEXTURE_2D, k, v);
+
+// Area di ritaglio (quadrata o intera) in pixel video
+function cropInfo() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!$('square').checked) return { w: vw, h: vh, sx: 1, sy: 1 };
+  const side = Math.min(vw, vh);
+  return { w: side, h: side, sx: side / vw, sy: side / vh };
+}
+
+function draw(w, h) {
+  const c = cropInfo();
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  gl.viewport(0, 0, w, h);
+  gl.uniform2f(U('u_off'), (1 - c.sx) / 2, (1 - c.sy) / 2);
+  gl.uniform2f(U('u_scale'), c.sx, c.sy);
+  gl.uniform1f(U('u_s'), +$('strength').value);
+  gl.uniform1f(U('u_seed'), Math.random() * 100);
+  gl.uniform1f(U('u_mirror'), facing === 'user' ? 1 : 0);
+  gl.uniform1f(U('u_ev'), LOOK.exposureEV);
+  gl.uniform1f(U('u_sat'), LOOK.saturation);
+  gl.uniform1f(U('u_con'), LOOK.contrast);
+  gl.uniform1f(U('u_cy'), LOOK.shadowCyan);
+  gl.uniform1f(U('u_pk'), LOOK.highlightPink);
+  gl.uniform1f(U('u_bloom'), LOOK.bloom);
+  gl.uniform1f(U('u_grain'), LOOK.grain);
+  LOOK.curve.forEach((v, i) => gl.uniform1f(U('u_c' + i), v));
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+function frame() {
+  if (video.readyState >= 2 && !$('result').classList.contains('show')) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+    const c = cropInfo();
+    const k = Math.min(1, 1080 / Math.max(c.w, c.h));  // anteprima leggera
+    draw(Math.round(c.w * k), Math.round(c.h * k));
+  }
+  requestAnimationFrame(frame);
+}
+
+async function startCamera() {
+  stream?.getTracks().forEach(t => t.stop());
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: facing, width: { ideal: 4032 }, height: { ideal: 3024 } },
+    });
+    video.srcObject = stream;
+    await video.play();
+    $('msg').textContent = '';
+  } catch (e) {
+    $('msg').textContent = 'Fotocamera non disponibile: ' + e.message + '. Serve https e il permesso in Impostazioni > Safari > Fotocamera.';
+  }
+}
+
+function shoot() {
+  if (video.readyState < 2) return;
+  $('flash').style.transition = 'none'; $('flash').style.opacity = .8;
+  requestAnimationFrame(() => { $('flash').style.transition = ''; $('flash').style.opacity = 0; });
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+  const c = cropInfo();
+  draw(c.w, c.h);  // risoluzione piena del sensore che Safari concede
+  canvas.toBlob(blob => {
+    lastBlob = blob;
+    $('shot').src = URL.createObjectURL(blob);
+    $('result').classList.add('show');
+  }, 'image/jpeg', 0.92);
+}
+
+async function save() {
+  if (!lastBlob) return;
+  const name = 'kawauchi-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
+  const file = new File([lastBlob], name, { type: 'image/jpeg' });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); } catch (_) {}
+  } else {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file); a.download = name; a.click();
+  }
+}
+
+$('stage').addEventListener('click', () => { if (!stream) startCamera(); });
+$('shutter').addEventListener('click', () => stream ? shoot() : startCamera());
+$('flip').addEventListener('click', () => { facing = facing === 'environment' ? 'user' : 'environment'; startCamera(); });
+$('save').addEventListener('click', save);
+$('back').addEventListener('click', () => { URL.revokeObjectURL($('shot').src); $('result').classList.remove('show'); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { stream?.getTracks().forEach(t => t.stop()); stream = null; }
+  else startCamera();
+});
+
+startCamera();
+requestAnimationFrame(frame);
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>
