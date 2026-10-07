@@ -41,6 +41,14 @@ Installa l'estensione **Claude Code** in VS Code. In alternativa, da terminale e
 
 Dopo ogni modifica ricarica i file su GitHub, poi sull'iPhone chiudi e riapri l'app.
 
+## Filtri e strumenti
+- **Kawauchi**: luce ariosa e sovraesposta, pastello ciano/rosa.
+- **Nikon vintage**: reflex a pellicola, calda e sbiadita, con alone rosso sulle luci, vignettatura, grana grossa, polvere, un graffio e un light leak arancione che cambia a ogni scatto.
+- **Telefono 2005**: sensore VGA, nitidezza esagerata, rumore colorato, alte luci bruciate, colori a 16 bit. Salva a 640 px, come i primi cellulari.
+- **Griglia**: regola dei terzi.
+- **Livella**: linea che diventa gialla quando il telefono è dritto. La prima volta chiede il permesso "Movimento e orientamento".
+- **Raddrizza**: corregge in automatico l'inclinazione fino a 15°, con un leggero ritaglio. Se raddrizza nel verso sbagliato, in `index.html` metti `TILT_SIGN = -1`.
+
 ## Regolare il look (`LOOK` in index.html)
 - Troppo bruciato: `exposureEV` a 0.3.
 - Ancora troppo contrastato: primo valore di `curve` a 0.16 e `contrast` a 0.85.

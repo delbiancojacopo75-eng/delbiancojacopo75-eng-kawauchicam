@@ -11,19 +11,36 @@
 <link rel="apple-touch-icon" href="icon-180.png?v=2">
 <title>KawauchiCam</title>
 <style>
-  :root { --fg: #fff; --dim: rgba(255,255,255,.65); --accent: #f4b8c8; }
+  :root { --fg: #fff; --dim: rgba(255,255,255,.65); --accent: #f4b8c8; --level: #ffd23f; }
   * { box-sizing: border-box; margin: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; background: #000; color: var(--fg); font: 15px -apple-system, system-ui, sans-serif; overflow: hidden; }
   body { display: flex; flex-direction: column; padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
   #stage { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; position: relative; }
   canvas { max-width: 100%; max-height: 100%; display: block; }
+  #overlay { position: absolute; pointer-events: none; }
+  #grid { position: absolute; inset: 0; display: none;
+    background:
+      linear-gradient(to right, transparent calc(33.333% - .5px), rgba(255,255,255,.45) calc(33.333% - .5px), rgba(255,255,255,.45) calc(33.333% + .5px), transparent calc(33.333% + .5px), transparent calc(66.666% - .5px), rgba(255,255,255,.45) calc(66.666% - .5px), rgba(255,255,255,.45) calc(66.666% + .5px), transparent calc(66.666% + .5px)),
+      linear-gradient(to bottom, transparent calc(33.333% - .5px), rgba(255,255,255,.45) calc(33.333% - .5px), rgba(255,255,255,.45) calc(33.333% + .5px), transparent calc(33.333% + .5px), transparent calc(66.666% - .5px), rgba(255,255,255,.45) calc(66.666% - .5px), rgba(255,255,255,.45) calc(66.666% + .5px), transparent calc(66.666% + .5px)); }
+  #grid.on { display: block; }
+  #level { position: absolute; left: 50%; top: 50%; width: 46%; height: 0; display: none; transform: translate(-50%, -50%); }
+  #level.on { display: block; }
+  #level::before, #level::after { content: ""; position: absolute; top: -1px; height: 2px; width: 38%; background: rgba(255,255,255,.85); border-radius: 1px; }
+  #level::before { left: 0; } #level::after { right: 0; }
+  #level.ok::before, #level.ok::after { background: var(--level); }
+  #levelRef { position: absolute; left: 50%; top: 50%; width: 46%; height: 0; display: none; transform: translate(-50%, -50%); }
+  #levelRef.on { display: block; }
+  #levelRef::before { content: ""; position: absolute; left: 42%; right: 42%; top: -1px; height: 2px; background: rgba(255,255,255,.4); }
   #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity .25s; }
   #msg { position: absolute; bottom: 12px; left: 0; right: 0; text-align: center; color: var(--dim); font-size: 13px; padding: 0 16px; }
-  #controls { padding: 12px 24px 16px; display: grid; gap: 14px; }
+  #controls { padding: 10px 20px 16px; display: grid; gap: 12px; }
+  .chips { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .chip { border: 1px solid rgba(255,255,255,.3); background: none; color: var(--dim); border-radius: 999px; padding: 7px 14px; font-size: 13px; }
+  .chip.on { background: #fff; color: #000; border-color: #fff; }
+  .chips.small .chip { padding: 5px 11px; font-size: 12px; }
+  .chips.small .chip.on { background: var(--accent); border-color: var(--accent); }
   .row { display: flex; align-items: center; gap: 12px; color: var(--dim); font-size: 13px; }
   input[type=range] { flex: 1; accent-color: #fff; }
-  .toggle { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-  input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
   #bar { display: flex; align-items: center; justify-content: space-between; padding: 0 20px; }
   #shutter { width: 78px; height: 78px; border-radius: 50%; border: 4px solid #fff; background: rgba(255,255,255,.9); background-clip: content-box; padding: 6px; }
   #shutter:active { transform: scale(.94); }
@@ -41,12 +58,23 @@
 <body>
 <div id="stage">
   <canvas id="view"></canvas>
+  <div id="overlay"><div id="grid"></div><div id="levelRef"></div><div id="level"></div></div>
   <div id="flash"></div>
   <div id="msg">Tocca per avviare la fotocamera</div>
 </div>
 <div id="controls">
-  <div class="row">Effetto <input id="strength" type="range" min="0" max="1" step="0.01" value="1">
-    <label class="toggle">6x6 <input id="square" type="checkbox" checked></label></div>
+  <div class="chips" id="filters">
+    <button class="chip" data-mode="0">Kawauchi</button>
+    <button class="chip" data-mode="1">Nikon vintage</button>
+    <button class="chip" data-mode="2">Telefono 2005</button>
+  </div>
+  <div class="row">Effetto <input id="strength" type="range" min="0" max="1" step="0.01" value="1"></div>
+  <div class="chips small">
+    <button class="chip" id="square">6x6</button>
+    <button class="chip" id="gridBtn">Griglia</button>
+    <button class="chip" id="levelBtn">Livella</button>
+    <button class="chip" id="straightBtn">Raddrizza</button>
+  </div>
   <div id="bar">
     <span class="icon"></span>
     <button id="shutter" aria-label="Scatta"></button>
@@ -60,7 +88,7 @@
 </div>
 
 <script>
-// ===== Parametri del look: cambiali qui =====
+// ===== Parametri del look Kawauchi: cambiali qui =====
 const LOOK = {
   exposureEV: 0.45,      // sovraesposizione
   curve: [0.12, 0.36, 0.60, 0.82, 0.96], // uscita della curva a 0, .25, .5, .75, 1 (neri sollevati, bianchi morbidi)
@@ -71,13 +99,29 @@ const LOOK = {
   bloom: 1.2,            // bagliore attorno alle luci
   grain: 0.07,           // grana (0 = niente)
 };
+// Filtro "Telefono 2005": risoluzione del file salvato (lato lungo, come una fotocamera VGA)
+const PHONE_LONG_SIDE = 640;
+// Livella: se la foto viene raddrizzata nel verso sbagliato, metti -1
+const TILT_SIGN = 1;
+const MAX_STRAIGHTEN = 15; // gradi massimi di correzione automatica
 
 const $ = id => document.getElementById(id);
+const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (_) { return d; } },
+                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} } };
+const state = {
+  mode: store.get('mode', 0),
+  square: store.get('square', true),
+  grid: store.get('grid', false),
+  level: store.get('level', false),
+  straight: store.get('straight', false),
+};
 const video = document.createElement('video');
 video.playsInline = true; video.muted = true; video.setAttribute('playsinline', '');
 const canvas = $('view');
 const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true, premultipliedAlpha: false });
 let facing = 'environment', stream = null, lastBlob = null;
+let dustSeed = Math.random() * 100;  // polvere e graffi: fissi finché non scatti
+let tilt = 0, motionOn = false;      // inclinazione in radianti (filtrata)
 
 // ===== Shader =====
 const VS = `attribute vec2 p; varying vec2 v_uv;
@@ -85,23 +129,24 @@ void main(){ v_uv = p*0.5+0.5; gl_Position = vec4(p,0.,1.); }`;
 const FS = `precision highp float;
 varying vec2 v_uv;
 uniform sampler2D u_tex;
-uniform vec2 u_off, u_scale;
-uniform float u_s, u_seed, u_mirror, u_ev, u_sat, u_con, u_cy, u_pk, u_bloom, u_grain;
+uniform vec2 u_off, u_scale, u_res;
+uniform float u_mode, u_rot, u_s, u_seed, u_dust, u_mirror, u_ev, u_sat, u_con, u_cy, u_pk, u_bloom, u_grain;
 uniform float u_c0, u_c1, u_c2, u_c3, u_c4;
 vec3 tex(vec2 uv){ return texture2D(u_tex, u_off + clamp(uv,0.,1.)*u_scale).rgb; }
+float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453); }
+float luma(vec3 c){ return dot(c, vec3(.2126,.7152,.0722)); }
 float curve(float x){
   if (x < .25) return mix(u_c0, u_c1, x/.25);
   if (x < .50) return mix(u_c1, u_c2, (x-.25)/.25);
   if (x < .75) return mix(u_c2, u_c3, (x-.5)/.25);
   return mix(u_c3, u_c4, (x-.75)/.25);
 }
-float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453); }
-void main(){
-  float s = u_s;
-  vec2 uv = v_uv; if (u_mirror > .5) uv.x = 1. - uv.x;
+
+// --- Kawauchi: luce ariosa, neri sollevati, pastello ciano/rosa ---
+vec3 kawauchi(vec2 uv, float s){
   vec3 c = clamp(tex(uv) * exp2(u_ev*s), 0., 1.);
   c = mix(c, vec3(curve(c.r), curve(c.g), curve(c.b)), s);
-  float l = dot(c, vec3(.2126,.7152,.0722));
+  float l = luma(c);
   c = mix(vec3(l), c, 1. - (1.-u_sat)*s);
   c = (c - .5) * (1. - (1.-u_con)*s) + .5;
   vec3 cy = c*vec3(1.-u_cy*s, 1., 1.) + vec3(0., u_cy*.5*s, u_cy*s);
@@ -116,6 +161,92 @@ void main(){
   }
   c += b / 24. * u_bloom * s;
   c += (hash(gl_FragCoord.xy + u_seed) - .5) * u_grain * s;
+  return c;
+}
+
+// --- Nikon vintage: reflex a pellicola, calda, sbiadita, sporca ---
+float dust(vec2 uv){
+  vec2 g = uv * 55.; vec2 id = floor(g); vec2 f = fract(g);
+  if (hash(id + u_dust) < .986) return 0.;
+  vec2 p = vec2(hash(id + u_dust + 1.), hash(id + u_dust + 2.)) * .6 + .2;
+  float r = .03 + .09 * hash(id + u_dust + 3.);
+  float d = smoothstep(r, r * .3, length(f - p));
+  return hash(id + u_dust + 4.) > .35 ? d : -d;   // per lo più bianca, a volte scura
+}
+vec3 nikon(vec2 uv, float s){
+  vec3 o = tex(uv);
+  vec3 c = o;
+  // alone rosso attorno alle luci forti (halation della pellicola)
+  vec3 h = vec3(0.);
+  for (int i = 0; i < 12; i++) {
+    float a = float(i) * .5235988;
+    vec2 d = vec2(cos(a), sin(a));
+    h += max(tex(uv + d*.006) - .7, 0.);
+    h += max(tex(uv + d*.015) - .7, 0.);
+  }
+  c += h / 24. * vec3(1.6, .55, .25);
+  // contrasto a S, colori un po' spenti, dominante calda
+  c = clamp(c, 0., 1.);
+  c = mix(c, c*c*(3.-2.*c), .45);
+  c = mix(vec3(luma(c)), c, .82);
+  c = c * vec3(1.06, 1., .86) + vec3(.02, .015, 0.);
+  // neri sbiaditi verdastri, bianchi color crema
+  c = mix(vec3(.08, .09, .07), vec3(.96, .93, .84), clamp(c, 0., 1.));
+  // vignettatura dell'obiettivo
+  vec2 q = uv - .5;
+  c *= 1. - dot(q, q) * 1.15;
+  // light leak arancione da un lato, diverso a ogni scatto
+  vec2 lp = vec2(hash(vec2(u_dust, 5.)) < .5 ? -.15 : 1.15, hash(vec2(u_dust, 6.)));
+  float leak = smoothstep(.85, 0., distance(uv, lp)) * (.25 + .25 * hash(vec2(u_dust, 7.)));
+  c = 1. - (1. - c) * (1. - vec3(1., .42, .12) * leak);
+  // grana grossa
+  float gs = max(1., u_res.x / 900.);
+  c += (hash(floor(gl_FragCoord.xy / gs) + u_seed) - .5) * .14;
+  // polvere e un graffio
+  c += dust(uv) * .55;
+  float sx = hash(vec2(u_dust, 9.));
+  float scratch = smoothstep(.0016, 0., abs(uv.x - sx - .01 * sin(uv.y * 7. + u_dust))) * step(.35, hash(vec2(floor(uv.y * 4.), u_dust)));
+  c += scratch * .35;
+  return mix(o, c, s);
+}
+
+// --- Telefono 2005: sensore VGA, nitidezza esagerata, rumore, colori a 16 bit ---
+vec3 phone(vec2 uv, float s){
+  vec3 o = tex(uv);
+  vec2 cells = u_res * (480. / min(u_res.x, u_res.y));
+  vec2 id = floor(uv * cells);
+  vec2 q = (id + .5) / cells;
+  vec2 px = 1. / cells;
+  vec3 c = tex(q);
+  vec3 n = (tex(q + vec2(px.x, 0.)) + tex(q - vec2(px.x, 0.)) + tex(q + vec2(0., px.y)) + tex(q - vec2(0., px.y))) * .25;
+  c += (c - n) * 1.3;                                   // sharpening aggressivo
+  vec2 b = (floor(uv * cells / 8.) + .5) * 8. / cells;
+  c = mix(c, tex(b), .2);                               // blocchetti JPEG
+  c = (c * 1.2 - .5) * 1.25 + .5;                       // alte luci bruciate, contrasto duro
+  c *= vec3(.94, 1.03, 1.1);                            // bilanciamento del bianco freddo
+  c = mix(vec3(luma(c)), c, 1.2);
+  c += (vec3(hash(id + u_seed), hash(id + u_seed + 7.), hash(id + u_seed + 13.)) - .5) * .11;  // rumore colorato
+  vec2 v = uv - .5;
+  c *= 1. - dot(v, v) * .9;
+  c = clamp(c, 0., 1.);
+  c = floor(c * vec3(31., 63., 31.) + .5) / vec3(31., 63., 31.);  // RGB565
+  return mix(o, c, s);
+}
+
+void main(){
+  vec2 uv = v_uv;
+  if (u_mirror > .5) uv.x = 1. - uv.x;
+  if (u_rot != 0.) {   // raddrizza: ruota e ingrandisce quanto basta per non vedere i bordi
+    vec2 p = (uv - .5) * u_res;
+    float cs = cos(u_rot), sn = sin(u_rot);
+    float k = abs(cs) + abs(sn) * max(u_res.x / u_res.y, u_res.y / u_res.x);
+    p = mat2(cs, sn, -sn, cs) * p / k;
+    uv = p / u_res + .5;
+  }
+  vec3 c;
+  if (u_mode < .5) c = kawauchi(uv, u_s);
+  else if (u_mode < 1.5) c = nikon(uv, u_s);
+  else c = phone(uv, u_s);
   gl_FragColor = vec4(clamp(c, 0., 1.), 1.);
 }`;
 function shader(type, src) {
@@ -142,9 +273,15 @@ for (const [k, v] of [[gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T,
 // Area di ritaglio (quadrata o intera) in pixel video
 function cropInfo() {
   const vw = video.videoWidth, vh = video.videoHeight;
-  if (!$('square').checked) return { w: vw, h: vh, sx: 1, sy: 1 };
+  if (!state.square) return { w: vw, h: vh, sx: 1, sy: 1 };
   const side = Math.min(vw, vh);
   return { w: side, h: side, sx: side / vw, sy: side / vh };
+}
+
+function straightenAngle() {
+  if (!state.straight || !motionOn) return 0;
+  const lim = MAX_STRAIGHTEN * Math.PI / 180;
+  return Math.max(-lim, Math.min(lim, tilt)) * TILT_SIGN;
 }
 
 function draw(w, h) {
@@ -153,8 +290,12 @@ function draw(w, h) {
   gl.viewport(0, 0, w, h);
   gl.uniform2f(U('u_off'), (1 - c.sx) / 2, (1 - c.sy) / 2);
   gl.uniform2f(U('u_scale'), c.sx, c.sy);
+  gl.uniform2f(U('u_res'), w, h);
+  gl.uniform1f(U('u_mode'), state.mode);
+  gl.uniform1f(U('u_rot'), straightenAngle());
   gl.uniform1f(U('u_s'), +$('strength').value);
   gl.uniform1f(U('u_seed'), Math.random() * 100);
+  gl.uniform1f(U('u_dust'), dustSeed);
   gl.uniform1f(U('u_mirror'), facing === 'user' ? 1 : 0);
   gl.uniform1f(U('u_ev'), LOOK.exposureEV);
   gl.uniform1f(U('u_sat'), LOOK.saturation);
@@ -167,14 +308,56 @@ function draw(w, h) {
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
 
+// Griglia e livella seguono la posizione dell'anteprima
+function placeOverlay() {
+  const r = canvas.getBoundingClientRect(), s = $('stage').getBoundingClientRect();
+  const o = $('overlay').style;
+  o.left = (r.left - s.left) + 'px'; o.top = (r.top - s.top) + 'px';
+  o.width = r.width + 'px'; o.height = r.height + 'px';
+  const lv = $('level');
+  if (state.level && motionOn) {
+    const deg = tilt * 180 / Math.PI;
+    lv.style.transform = `translate(-50%, -50%) rotate(${-deg}deg)`;
+    lv.classList.toggle('ok', Math.abs(deg) < 1);
+  }
+}
+
 function frame() {
   if (video.readyState >= 2 && !$('result').classList.contains('show')) {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
     const c = cropInfo();
     const k = Math.min(1, 1080 / Math.max(c.w, c.h));  // anteprima leggera
     draw(Math.round(c.w * k), Math.round(c.h * k));
+    placeOverlay();
   }
   requestAnimationFrame(frame);
+}
+
+// ===== Sensore di inclinazione =====
+function onMotion(e) {
+  const g = e.accelerationIncludingGravity;
+  if (!g || g.x === null) return;
+  let a = Math.atan2(-g.x, g.y);            // 0 = telefono dritto in verticale
+  if (a > Math.PI / 2) a -= Math.PI;        // compatibilità tra convenzioni dei segni
+  if (a < -Math.PI / 2) a += Math.PI;
+  tilt += (a - tilt) * 0.15;                // filtro per togliere il tremolio
+  motionOn = true;
+}
+async function enableMotion() {
+  if (motionOn) return true;
+  try {
+    if (typeof DeviceMotionEvent !== 'undefined' && DeviceMotionEvent.requestPermission) {
+      if (await DeviceMotionEvent.requestPermission() !== 'granted') {
+        $('msg').textContent = 'Serve il permesso "Movimento e orientamento" per la livella.';
+        return false;
+      }
+    }
+    window.addEventListener('devicemotion', onMotion);
+    return true;
+  } catch (_) {
+    $('msg').textContent = 'Tocca di nuovo Livella per concedere il permesso.';
+    return false;
+  }
 }
 
 async function startCamera() {
@@ -198,17 +381,19 @@ function shoot() {
   requestAnimationFrame(() => { $('flash').style.transition = ''; $('flash').style.opacity = 0; });
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
   const c = cropInfo();
-  draw(c.w, c.h);  // risoluzione piena del sensore che Safari concede
+  const k = state.mode === 2 ? Math.min(1, PHONE_LONG_SIDE / Math.max(c.w, c.h)) : 1;
+  draw(Math.round(c.w * k), Math.round(c.h * k));  // risoluzione piena (o VGA per il telefono)
   canvas.toBlob(blob => {
     lastBlob = blob;
     $('shot').src = URL.createObjectURL(blob);
     $('result').classList.add('show');
-  }, 'image/jpeg', 0.92);
+    dustSeed = Math.random() * 100;  // polvere e light leak nuovi al prossimo scatto
+  }, 'image/jpeg', state.mode === 2 ? 0.7 : 0.92);
 }
 
 async function save() {
   if (!lastBlob) return;
-  const name = 'kawauchi-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
+  const name = ['kawauchi', 'nikon', 'phone'][state.mode] + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
   const file = new File([lastBlob], name, { type: 'image/jpeg' });
   if (navigator.canShare?.({ files: [file] })) {
     try { await navigator.share({ files: [file] }); } catch (_) {}
@@ -218,8 +403,39 @@ async function save() {
   }
 }
 
+// ===== Interfaccia =====
+function render() {
+  document.querySelectorAll('#filters .chip').forEach(b => b.classList.toggle('on', +b.dataset.mode === state.mode));
+  $('square').classList.toggle('on', state.square);
+  $('gridBtn').classList.toggle('on', state.grid);
+  $('levelBtn').classList.toggle('on', state.level);
+  $('straightBtn').classList.toggle('on', state.straight);
+  $('grid').classList.toggle('on', state.grid);
+  $('level').classList.toggle('on', state.level);
+  $('levelRef').classList.toggle('on', state.level);
+  for (const k of ['mode', 'square', 'grid', 'level', 'straight']) store.set(k, state[k]);
+}
+document.querySelectorAll('#filters .chip').forEach(b =>
+  b.addEventListener('click', () => { state.mode = +b.dataset.mode; render(); }));
+$('square').addEventListener('click', () => { state.square = !state.square; render(); });
+$('gridBtn').addEventListener('click', () => { state.grid = !state.grid; render(); });
+$('levelBtn').addEventListener('click', async () => {
+  state.level = !state.level;
+  if (state.level && !(await enableMotion())) state.level = false;
+  render();
+});
+$('straightBtn').addEventListener('click', async () => {
+  state.straight = !state.straight;
+  if (state.straight && !(await enableMotion())) state.straight = false;
+  render();
+});
+
 $('stage').addEventListener('click', () => { if (!stream) startCamera(); });
-$('shutter').addEventListener('click', () => stream ? shoot() : startCamera());
+$('shutter').addEventListener('click', () => {
+  if (!stream) return startCamera();
+  if ((state.level || state.straight) && !motionOn) enableMotion();  // dopo un riavvio dell'app il permesso va richiesto con un tocco
+  shoot();
+});
 $('flip').addEventListener('click', () => { facing = facing === 'environment' ? 'user' : 'environment'; startCamera(); });
 $('save').addEventListener('click', save);
 $('back').addEventListener('click', () => { URL.revokeObjectURL($('shot').src); $('result').classList.remove('show'); });
@@ -228,6 +444,9 @@ document.addEventListener('visibilitychange', () => {
   else startCamera();
 });
 
+// Su Android/desktop il sensore parte senza permesso; su iPhone serve un tocco su Livella o Raddrizza
+if ((state.level || state.straight) && !(typeof DeviceMotionEvent !== 'undefined' && DeviceMotionEvent.requestPermission)) enableMotion();
+render();
 startCamera();
 requestAnimationFrame(frame);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
