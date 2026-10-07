@@ -43,8 +43,12 @@ Dopo ogni modifica ricarica i file su GitHub, poi sull'iPhone chiudi e riapri l'
 
 ## Filtri e strumenti
 - **Kawauchi**: luce ariosa e sovraesposta, pastello ciano/rosa.
-- **Nikon vintage**: reflex a pellicola, calda e sbiadita, con alone rosso sulle luci, vignettatura, grana grossa, polvere, un graffio e un light leak arancione che cambia a ogni scatto.
-- **Telefono 2005**: sensore VGA, nitidezza esagerata, rumore colorato, alte luci bruciate, colori a 16 bit. Salva a 640 px, come i primi cellulari.
+- **Soth** (Alec Soth): luce nordica, colori quieti e freddi.
+- **Hido** (Todd Hido): crepuscolo, leggera foschia, ombre petrolio e luci calde al sodio.
+- **Gruyaert** (Harry Gruyaert): colori pieni e profondi, ombre dense.
+- **McGinley** (Ryan McGinley): estate, sole basso, toni dorati.
+
+Sono interpretazioni libere, non copie: i parametri di ogni look stanno in `LOOKS` in `index.html`.
 - **Griglia**: regola dei terzi.
 - **Livella**: linea che diventa gialla quando il telefono è dritto. La prima volta chiede il permesso "Movimento e orientamento".
 - **Raddrizza**: corregge in automatico l'inclinazione fino a 15°, con un leggero ritaglio. Se raddrizza nel verso sbagliato, in `index.html` metti `TILT_SIGN = -1`.

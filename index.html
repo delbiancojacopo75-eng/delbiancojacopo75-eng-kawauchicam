@@ -39,6 +39,9 @@
   .chips { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
   .chip { border: 1px solid rgba(255,255,255,.3); background: none; color: var(--dim); border-radius: 999px; padding: 7px 14px; font-size: 13px; }
   .chip.on { background: #fff; color: #000; border-color: #fff; }
+  #filters { flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start; margin: 0 -20px; padding: 0 20px; scrollbar-width: none; }
+  #filters::-webkit-scrollbar { display: none; }
+  #filters .chip { flex: none; }
   .chips.small .chip { padding: 5px 11px; font-size: 12px; }
   .chips.small .chip.on { background: var(--accent); border-color: var(--accent); }
   .row { display: flex; align-items: center; gap: 12px; color: var(--dim); font-size: 13px; }
@@ -67,8 +70,10 @@
 <div id="controls">
   <div class="chips" id="filters">
     <button class="chip" data-mode="0">Kawauchi</button>
-    <button class="chip" data-mode="1">Nikon vintage</button>
-    <button class="chip" data-mode="2">Telefono 2005</button>
+    <button class="chip" data-mode="1">Soth</button>
+    <button class="chip" data-mode="2">Hido</button>
+    <button class="chip" data-mode="3">Gruyaert</button>
+    <button class="chip" data-mode="4">McGinley</button>
   </div>
   <div class="row">Effetto <input id="strength" type="range" min="0" max="1" step="0.01" value="1"></div>
   <div class="chips small">
@@ -101,8 +106,29 @@ const LOOK = {
   bloom: 1.2,            // bagliore attorno alle luci
   grain: 0.07,           // grana (0 = niente)
 };
-// Filtro "Telefono 2005": risoluzione del file salvato (lato lungo, come una fotocamera VGA)
-const PHONE_LONG_SIDE = 640;
+// ===== Altri look, ispirati (liberamente) a fotografi contemporanei =====
+// ev: esposizione · curve: uscita a 0/.25/.5/.75/1 · sat/con: 1 = originale
+// shadow/highlight: colore aggiunto a ombre e luci · wb: bilanciamento R,G,B
+// glow: alone morbido attorno alle luci (soglia, tinta) · haze: foschia · vignette · grain: grana fine
+const LOOKS = [
+  null, // 0 = Kawauchi (usa LOOK sopra)
+  { name: 'soth',      // Alec Soth: luce nordica, colori quieti e freddi, grande formato
+    ev: 0.1,   curve: [0.05, 0.27, 0.52, 0.76, 0.95], sat: 0.72, con: 0.96,
+    shadow: [-0.01, 0.00, 0.03], highlight: [0.015, 0.01, -0.005], wb: [0.98, 1.0, 1.02],
+    glow: 0.25, glowThr: 0.78, glowTint: [1, 1, 1], haze: 0.0, hazeColor: [0.8, 0.82, 0.85], vignette: 0.10, grain: 0.015 },
+  { name: 'hido',      // Todd Hido: crepuscolo, foschia, ombre petrolio e luci al sodio
+    ev: -0.2,  curve: [0.07, 0.26, 0.48, 0.70, 0.90], sat: 0.85, con: 0.88,
+    shadow: [-0.03, 0.02, 0.05], highlight: [0.07, 0.035, -0.03], wb: [1.0, 1.0, 1.0],
+    glow: 0.5, glowThr: 0.68, glowTint: [1.0, 0.8, 0.55], haze: 0.16, hazeColor: [0.52, 0.58, 0.64], vignette: 0.30, grain: 0.02 },
+  { name: 'gruyaert',  // Harry Gruyaert: colori pieni e profondi, ombre dense
+    ev: 0.0,   curve: [0.0, 0.19, 0.50, 0.80, 1.0], sat: 1.25, con: 1.10,
+    shadow: [0.0, 0.0, 0.025], highlight: [0.02, 0.01, 0.0], wb: [1.02, 1.0, 0.98],
+    glow: 0.0, glowThr: 0.9, glowTint: [1, 1, 1], haze: 0.0, hazeColor: [0, 0, 0], vignette: 0.18, grain: 0.01 },
+  { name: 'mcginley',  // Ryan McGinley: estate, sole basso, pelle dorata
+    ev: 0.3,   curve: [0.03, 0.30, 0.58, 0.84, 1.0], sat: 1.12, con: 1.0,
+    shadow: [0.02, -0.005, -0.02], highlight: [0.05, 0.025, -0.03], wb: [1.05, 1.0, 0.9],
+    glow: 0.6, glowThr: 0.65, glowTint: [1.0, 0.82, 0.55], haze: 0.0, hazeColor: [1, 0.9, 0.8], vignette: 0.08, grain: 0.015 },
+];
 // Livella: se la foto viene raddrizzata nel verso sbagliato, metti -1
 const TILT_SIGN = 1;
 const MAX_STRAIGHTEN = 15; // gradi massimi di correzione automatica
@@ -111,7 +137,7 @@ const $ = id => document.getElementById(id);
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (_) { return d; } },
                 set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} } };
 const state = {
-  mode: store.get('mode', 0),
+  mode: Math.min(store.get('mode', 0), 4),
   square: store.get('square', true),
   grid: store.get('grid', false),
   level: false,      // la livella si riaccende con un tocco: su iPhone il sensore lo richiede
@@ -122,7 +148,6 @@ video.playsInline = true; video.muted = true; video.setAttribute('playsinline', 
 const canvas = $('view');
 const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true, premultipliedAlpha: false });
 let facing = 'environment', stream = null, lastBlob = null;
-let dustSeed = Math.random() * 100;  // polvere e graffi: fissi finché non scatti
 let tilt = 0, motionOn = false;      // inclinazione in radianti (filtrata)
 
 // ===== Shader =====
@@ -132,7 +157,10 @@ const FS = `precision highp float;
 varying vec2 v_uv;
 uniform sampler2D u_tex;
 uniform vec2 u_off, u_scale, u_res;
-uniform float u_mode, u_rot, u_s, u_seed, u_dust, u_mirror, u_ev, u_sat, u_con, u_cy, u_pk, u_bloom, u_grain;
+uniform float u_mode, u_rot, u_s, u_seed, u_mirror,
+  g_ev, g_sat, g_con, g_glow, g_thr, g_haze, g_vig, g_grain, g_k0, g_k1, g_k2, g_k3, g_k4;
+uniform vec3 g_sh, g_hi, g_wb, g_glowTint, g_hazeCol;
+uniform float u_ev, u_sat, u_con, u_cy, u_pk, u_bloom, u_grain;
 uniform float u_c0, u_c1, u_c2, u_c3, u_c4;
 vec3 tex(vec2 uv){ return texture2D(u_tex, u_off + clamp(uv,0.,1.)*u_scale).rgb; }
 float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453); }
@@ -166,72 +194,35 @@ vec3 kawauchi(vec2 uv, float s){
   return c;
 }
 
-// --- Nikon vintage: reflex a pellicola, calda, sbiadita, sporca ---
-float dust(vec2 uv){
-  vec2 g = uv * 55.; vec2 id = floor(g); vec2 f = fract(g);
-  if (hash(id + u_dust) < .986) return 0.;
-  vec2 p = vec2(hash(id + u_dust + 1.), hash(id + u_dust + 2.)) * .6 + .2;
-  float r = .03 + .09 * hash(id + u_dust + 3.);
-  float d = smoothstep(r, r * .3, length(f - p));
-  return hash(id + u_dust + 4.) > .35 ? d : -d;   // per lo più bianca, a volte scura
+// --- Look generico parametrico (Soth, Hido, Gruyaert, McGinley) ---
+float gcurve(float x){
+  if (x < .25) return mix(g_k0, g_k1, x/.25);
+  if (x < .50) return mix(g_k1, g_k2, (x-.25)/.25);
+  if (x < .75) return mix(g_k2, g_k3, (x-.5)/.25);
+  return mix(g_k3, g_k4, (x-.75)/.25);
 }
-vec3 nikon(vec2 uv, float s){
+vec3 grade(vec2 uv, float s){
   vec3 o = tex(uv);
-  vec3 c = o;
-  // alone rosso attorno alle luci forti (halation della pellicola)
-  vec3 h = vec3(0.);
-  for (int i = 0; i < 12; i++) {
-    float a = float(i) * .5235988;
-    vec2 d = vec2(cos(a), sin(a));
-    h += max(tex(uv + d*.006) - .7, 0.);
-    h += max(tex(uv + d*.015) - .7, 0.);
+  vec3 c = clamp(o * exp2(g_ev) * g_wb, 0., 1.);
+  c = vec3(gcurve(c.r), gcurve(c.g), gcurve(c.b));
+  float l = luma(c);
+  c = mix(vec3(l), c, g_sat);
+  c = (c - .5) * g_con + .5;
+  c += g_sh * (1. - l) * (1. - l) + g_hi * l * l;     // tinte separate per ombre e luci
+  if (g_glow > 0.) {
+    vec3 b = vec3(0.);
+    for (int i = 0; i < 12; i++) {
+      float a = float(i) * .5235988;
+      vec2 d = vec2(cos(a), sin(a));
+      b += max(tex(uv + d*.008) - g_thr, 0.);
+      b += max(tex(uv + d*.02) - g_thr, 0.);
+    }
+    c += b / 24. * g_glow * g_glowTint;
   }
-  c += h / 24. * vec3(1.6, .55, .25);
-  // contrasto a S, colori un po' spenti, dominante calda
-  c = clamp(c, 0., 1.);
-  c = mix(c, c*c*(3.-2.*c), .45);
-  c = mix(vec3(luma(c)), c, .82);
-  c = c * vec3(1.06, 1., .86) + vec3(.02, .015, 0.);
-  // neri sbiaditi verdastri, bianchi color crema
-  c = mix(vec3(.08, .09, .07), vec3(.96, .93, .84), clamp(c, 0., 1.));
-  // vignettatura dell'obiettivo
+  c = mix(c, g_hazeCol, g_haze * (1. - .5 * l));
   vec2 q = uv - .5;
-  c *= 1. - dot(q, q) * 1.15;
-  // light leak arancione da un lato, diverso a ogni scatto
-  vec2 lp = vec2(hash(vec2(u_dust, 5.)) < .5 ? -.15 : 1.15, hash(vec2(u_dust, 6.)));
-  float leak = smoothstep(.85, 0., distance(uv, lp)) * (.25 + .25 * hash(vec2(u_dust, 7.)));
-  c = 1. - (1. - c) * (1. - vec3(1., .42, .12) * leak);
-  // grana grossa
-  float gs = max(1., u_res.x / 900.);
-  c += (hash(floor(gl_FragCoord.xy / gs) + u_seed) - .5) * .14;
-  // polvere e un graffio
-  c += dust(uv) * .55;
-  float sx = hash(vec2(u_dust, 9.));
-  float scratch = smoothstep(.0016, 0., abs(uv.x - sx - .01 * sin(uv.y * 7. + u_dust))) * step(.35, hash(vec2(floor(uv.y * 4.), u_dust)));
-  c += scratch * .35;
-  return mix(o, c, s);
-}
-
-// --- Telefono 2005: sensore VGA, nitidezza esagerata, rumore, colori a 16 bit ---
-vec3 phone(vec2 uv, float s){
-  vec3 o = tex(uv);
-  vec2 cells = u_res * (480. / min(u_res.x, u_res.y));
-  vec2 id = floor(uv * cells);
-  vec2 q = (id + .5) / cells;
-  vec2 px = 1. / cells;
-  vec3 c = tex(q);
-  vec3 n = (tex(q + vec2(px.x, 0.)) + tex(q - vec2(px.x, 0.)) + tex(q + vec2(0., px.y)) + tex(q - vec2(0., px.y))) * .25;
-  c += (c - n) * 1.3;                                   // sharpening aggressivo
-  vec2 b = (floor(uv * cells / 8.) + .5) * 8. / cells;
-  c = mix(c, tex(b), .2);                               // blocchetti JPEG
-  c = (c * 1.2 - .5) * 1.25 + .5;                       // alte luci bruciate, contrasto duro
-  c *= vec3(.94, 1.03, 1.1);                            // bilanciamento del bianco freddo
-  c = mix(vec3(luma(c)), c, 1.2);
-  c += (vec3(hash(id + u_seed), hash(id + u_seed + 7.), hash(id + u_seed + 13.)) - .5) * .11;  // rumore colorato
-  vec2 v = uv - .5;
-  c *= 1. - dot(v, v) * .9;
-  c = clamp(c, 0., 1.);
-  c = floor(c * vec3(31., 63., 31.) + .5) / vec3(31., 63., 31.);  // RGB565
+  c *= 1. - dot(q, q) * g_vig * 2.;
+  c += (hash(gl_FragCoord.xy + u_seed) - .5) * g_grain;
   return mix(o, c, s);
 }
 
@@ -247,8 +238,7 @@ void main(){
   }
   vec3 c;
   if (u_mode < .5) c = kawauchi(uv, u_s);
-  else if (u_mode < 1.5) c = nikon(uv, u_s);
-  else c = phone(uv, u_s);
+  else c = grade(uv, u_s);
   gl_FragColor = vec4(clamp(c, 0., 1.), 1.);
 }`;
 function shader(type, src) {
@@ -297,7 +287,14 @@ function draw(w, h) {
   gl.uniform1f(U('u_rot'), straightenAngle());
   gl.uniform1f(U('u_s'), +$('strength').value);
   gl.uniform1f(U('u_seed'), Math.random() * 100);
-  gl.uniform1f(U('u_dust'), dustSeed);
+  const L = LOOKS[state.mode];
+  if (L) {
+    for (const [k, v] of [['ev', L.ev], ['sat', L.sat], ['con', L.con], ['glow', L.glow], ['thr', L.glowThr],
+                          ['haze', L.haze], ['vig', L.vignette], ['grain', L.grain]]) gl.uniform1f(U('g_' + k), v);
+    L.curve.forEach((v, i) => gl.uniform1f(U('g_k' + i), v));
+    for (const [k, v] of [['sh', L.shadow], ['hi', L.highlight], ['wb', L.wb], ['glowTint', L.glowTint], ['hazeCol', L.hazeColor]])
+      gl.uniform3fv(U('g_' + k), v);
+  }
   gl.uniform1f(U('u_mirror'), facing === 'user' ? 1 : 0);
   gl.uniform1f(U('u_ev'), LOOK.exposureEV);
   gl.uniform1f(U('u_sat'), LOOK.saturation);
@@ -405,19 +402,17 @@ function shoot() {
   requestAnimationFrame(() => { $('flash').style.transition = ''; $('flash').style.opacity = 0; });
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
   const c = cropInfo();
-  const k = state.mode === 2 ? Math.min(1, PHONE_LONG_SIDE / Math.max(c.w, c.h)) : 1;
-  draw(Math.round(c.w * k), Math.round(c.h * k));  // risoluzione piena (o VGA per il telefono)
+  draw(c.w, c.h);  // risoluzione piena del sensore che Safari concede
   canvas.toBlob(blob => {
     lastBlob = blob;
     $('shot').src = URL.createObjectURL(blob);
     $('result').classList.add('show');
-    dustSeed = Math.random() * 100;  // polvere e light leak nuovi al prossimo scatto
-  }, 'image/jpeg', state.mode === 2 ? 0.7 : 0.92);
+  }, 'image/jpeg', 0.92);
 }
 
 async function save() {
   if (!lastBlob) return;
-  const name = ['kawauchi', 'nikon', 'phone'][state.mode] + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
+  const name = (LOOKS[state.mode]?.name || 'kawauchi') + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
   const file = new File([lastBlob], name, { type: 'image/jpeg' });
   if (navigator.canShare?.({ files: [file] })) {
     try { await navigator.share({ files: [file] }); } catch (_) {}
