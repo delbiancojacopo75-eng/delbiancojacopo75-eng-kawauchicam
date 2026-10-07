@@ -25,12 +25,14 @@
   #grid.on { display: block; }
   #level { position: absolute; left: 50%; top: 50%; width: 46%; height: 0; display: none; transform: translate(-50%, -50%); }
   #level.on { display: block; }
-  #level::before, #level::after { content: ""; position: absolute; top: -1px; height: 2px; width: 38%; background: rgba(255,255,255,.85); border-radius: 1px; }
+  #level::before, #level::after { content: ""; position: absolute; top: -1.5px; height: 3px; width: 38%; background: rgba(255,255,255,.9); border-radius: 2px; box-shadow: 0 0 3px rgba(0,0,0,.5); }
   #level::before { left: 0; } #level::after { right: 0; }
   #level.ok::before, #level.ok::after { background: var(--level); }
   #levelRef { position: absolute; left: 50%; top: 50%; width: 46%; height: 0; display: none; transform: translate(-50%, -50%); }
   #levelRef.on { display: block; }
   #levelRef::before { content: ""; position: absolute; left: 42%; right: 42%; top: -1px; height: 2px; background: rgba(255,255,255,.4); }
+  #levelTxt { position: absolute; left: 0; right: 0; top: calc(50% + 14px); text-align: center; font-size: 13px; font-weight: 600; color: #fff; text-shadow: 0 0 3px rgba(0,0,0,.7); display: none; }
+  #levelTxt.on { display: block; } #levelTxt.ok { color: var(--level); }
   #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity .25s; }
   #msg { position: absolute; bottom: 12px; left: 0; right: 0; text-align: center; color: var(--dim); font-size: 13px; padding: 0 16px; }
   #controls { padding: 10px 20px 16px; display: grid; gap: 12px; }
@@ -58,7 +60,7 @@
 <body>
 <div id="stage">
   <canvas id="view"></canvas>
-  <div id="overlay"><div id="grid"></div><div id="levelRef"></div><div id="level"></div></div>
+  <div id="overlay"><div id="grid"></div><div id="levelRef"></div><div id="level"></div><div id="levelTxt"></div></div>
   <div id="flash"></div>
   <div id="msg">Tocca per avviare la fotocamera</div>
 </div>
@@ -112,8 +114,8 @@ const state = {
   mode: store.get('mode', 0),
   square: store.get('square', true),
   grid: store.get('grid', false),
-  level: store.get('level', false),
-  straight: store.get('straight', false),
+  level: false,      // la livella si riaccende con un tocco: su iPhone il sensore lo richiede
+  straight: false,
 };
 const video = document.createElement('video');
 video.playsInline = true; video.muted = true; video.setAttribute('playsinline', '');
@@ -314,11 +316,15 @@ function placeOverlay() {
   const o = $('overlay').style;
   o.left = (r.left - s.left) + 'px'; o.top = (r.top - s.top) + 'px';
   o.width = r.width + 'px'; o.height = r.height + 'px';
-  const lv = $('level');
+  const lv = $('level'), txt = $('levelTxt');
   if (state.level && motionOn) {
     const deg = tilt * 180 / Math.PI;
+    const ok = Math.abs(deg) < 1;
     lv.style.transform = `translate(-50%, -50%) rotate(${-deg}deg)`;
-    lv.classList.toggle('ok', Math.abs(deg) < 1);
+    lv.classList.toggle('ok', ok); txt.classList.toggle('ok', ok);
+    txt.textContent = ok ? '0°' : Math.round(deg) + '°';
+  } else if (state.level) {
+    txt.textContent = 'In attesa del sensore…';
   }
 }
 
@@ -334,30 +340,48 @@ function frame() {
 }
 
 // ===== Sensore di inclinazione =====
-function onMotion(e) {
-  const g = e.accelerationIncludingGravity;
-  if (!g || g.x === null) return;
-  let a = Math.atan2(-g.x, g.y);            // 0 = telefono dritto in verticale
+// Vettore "su" nelle coordinate del telefono: 0° = telefono dritto in verticale
+function setTilt(x, y) {
+  if (!isFinite(x) || !isFinite(y) || (x === 0 && y === 0)) return;
+  let a = Math.atan2(-x, y);
   if (a > Math.PI / 2) a -= Math.PI;        // compatibilità tra convenzioni dei segni
   if (a < -Math.PI / 2) a += Math.PI;
-  tilt += (a - tilt) * 0.15;                // filtro per togliere il tremolio
+  tilt = motionOn ? tilt + (a - tilt) * 0.2 : a;  // filtro per togliere il tremolio
   motionOn = true;
 }
-async function enableMotion() {
-  if (motionOn) return true;
-  try {
-    if (typeof DeviceMotionEvent !== 'undefined' && DeviceMotionEvent.requestPermission) {
-      if (await DeviceMotionEvent.requestPermission() !== 'granted') {
-        $('msg').textContent = 'Serve il permesso "Movimento e orientamento" per la livella.';
-        return false;
-      }
+function onOrientation(e) {
+  if (e.beta === null || e.gamma === null) return;
+  const b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
+  setTilt(-Math.cos(b) * Math.sin(g), Math.sin(b));
+}
+function onMotion(e) {
+  if (gotOrientation) return;
+  const g = e.accelerationIncludingGravity;
+  if (g && g.x !== null) setTilt(g.x, g.y);
+}
+let listening = false, gotOrientation = false;
+function enableMotion() {
+  // Deve partire direttamente dal tocco: niente await prima della richiesta di permesso
+  const ask = (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission)
+    ? DeviceOrientationEvent.requestPermission()
+    : (typeof DeviceMotionEvent !== 'undefined' && DeviceMotionEvent.requestPermission)
+      ? DeviceMotionEvent.requestPermission() : Promise.resolve('granted');
+  return ask.then(res => {
+    if (res !== 'granted') {
+      $('msg').textContent = 'Permesso negato. Chiudi l\'app, riaprila e quando la tocchi consenti "Movimento e orientamento".';
+      return false;
     }
-    window.addEventListener('devicemotion', onMotion);
+    if (!listening) {
+      window.addEventListener('deviceorientation', e => { gotOrientation = true; onOrientation(e); });
+      window.addEventListener('devicemotion', onMotion);
+      listening = true;
+    }
+    setTimeout(() => { if (!motionOn) $('msg').textContent = 'Il sensore di inclinazione non risponde su questo dispositivo.'; }, 2000);
     return true;
-  } catch (_) {
-    $('msg').textContent = 'Tocca di nuovo Livella per concedere il permesso.';
+  }).catch(err => {
+    $('msg').textContent = 'Livella non disponibile: ' + err.message;
     return false;
-  }
+  });
 }
 
 async function startCamera() {
@@ -413,27 +437,24 @@ function render() {
   $('grid').classList.toggle('on', state.grid);
   $('level').classList.toggle('on', state.level);
   $('levelRef').classList.toggle('on', state.level);
-  for (const k of ['mode', 'square', 'grid', 'level', 'straight']) store.set(k, state[k]);
+  $('levelTxt').classList.toggle('on', state.level);
+  for (const k of ['mode', 'square', 'grid']) store.set(k, state[k]);
 }
 document.querySelectorAll('#filters .chip').forEach(b =>
   b.addEventListener('click', () => { state.mode = +b.dataset.mode; render(); }));
 $('square').addEventListener('click', () => { state.square = !state.square; render(); });
 $('gridBtn').addEventListener('click', () => { state.grid = !state.grid; render(); });
-$('levelBtn').addEventListener('click', async () => {
-  state.level = !state.level;
-  if (state.level && !(await enableMotion())) state.level = false;
+function toggleSensor(key) {
+  state[key] = !state[key];
   render();
-});
-$('straightBtn').addEventListener('click', async () => {
-  state.straight = !state.straight;
-  if (state.straight && !(await enableMotion())) state.straight = false;
-  render();
-});
+  if (state[key] && !motionOn) enableMotion().then(ok => { if (!ok) { state[key] = false; render(); } });
+}
+$('levelBtn').addEventListener('click', () => toggleSensor('level'));
+$('straightBtn').addEventListener('click', () => toggleSensor('straight'));
 
 $('stage').addEventListener('click', () => { if (!stream) startCamera(); });
 $('shutter').addEventListener('click', () => {
   if (!stream) return startCamera();
-  if ((state.level || state.straight) && !motionOn) enableMotion();  // dopo un riavvio dell'app il permesso va richiesto con un tocco
   shoot();
 });
 $('flip').addEventListener('click', () => { facing = facing === 'environment' ? 'user' : 'environment'; startCamera(); });
@@ -444,8 +465,6 @@ document.addEventListener('visibilitychange', () => {
   else startCamera();
 });
 
-// Su Android/desktop il sensore parte senza permesso; su iPhone serve un tocco su Livella o Raddrizza
-if ((state.level || state.straight) && !(typeof DeviceMotionEvent !== 'undefined' && DeviceMotionEvent.requestPermission)) enableMotion();
 render();
 startCamera();
 requestAnimationFrame(frame);
